@@ -69,7 +69,7 @@ python recommend_three_prices.py
 >4. 90%-цена: 340 ₽      |  P(accept) = 65.1%  |  E[доход] = 221.4 ₽
 
 ## Структура репозитория
-.
+/
 ├── app.py                     # Flask-бэкенд и API:
 │   │                          #  - POST /api/calc: 4 цены (лучшая, 90/60/20%)
 │   │                          #  - POST /api/custom: расчёт P и E для "своей цены"
