@@ -18,6 +18,7 @@
 >venv\Scripts\activate
 # macOS/Linux:
 >source venv/bin/activate
+>cd demo
 
 ### 2) Зависимости
 
@@ -70,15 +71,19 @@ python recommend_three_prices.py
 
 ## Структура репозитория
 drivee-smart-pricing/
-├─ app.py                                           
-├─ recommend_three_prices.py  
-├─ model.joblib               
-├─ train_model.py             
-├─ templates/
-│   └─ index.html             
-├─ static/                    
-├─ train.csv                  
-├─ requirements.txt           
+├─ demo /
+│   └─ app.py
+│   └─ recommend_three_prices.py 
+│   └─ model.joblib
+│   └─ train_model.py
+│   └─ static/
+│   │    └─ driver.jpg
+│   └─ train.csv
+│   └─ templates/
+│   │    └─ index.html             
+├─ 07-XX.pptx             
+├─ Demo.txt           
+├─ Screencast.txt                           
 └─ README.md                  
 
 Что внутри UI (index.html):
