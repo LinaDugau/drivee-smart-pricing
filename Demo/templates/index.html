@@ -567,6 +567,10 @@
                                 <label class="form-label">Модель машины</label>
                                 <input id="carmodel" type="text" class="form-control" placeholder="например, Camry">
                             </div>
+                            <div>
+                                <label class="form-label">Рейтинг водителя (0–5)</label>
+                                <input id="driver_rating" type="number" step="0.1" min="0" max="5" class="form-control" placeholder="например, 4.8">
+                            </div>
                             <div id="price-rounding-info" class="muted d-none mb-2" style="color: #6c757d;">Цена округляется до 5₽ перед расчетом.</div>
                        <div id="distance-info" class="muted d-none mb-2"></div>
                             <div class="d-flex gap-2 flex-wrap">
@@ -932,22 +936,19 @@
 
             const carname = document.getElementById('carname')?.value?.trim() || null;
             const carmodel = document.getElementById('carmodel')?.value?.trim() || null;
-
+            const drVal = document.getElementById('driver_rating')?.value?.trim();
+            const driver_rating = drVal === "" ? null : Number(drVal);
             const payload = {
                 start_price: Number(start_price.value),
                 order_time: order_time.value,
                 tender_time: tender_time.value,
                 carname: carname,
-                carmodel: carmodel
+                carmodel: carmodel,
+                driver_rating: driver_rating
             };
 
-            if (a && b) { 
-                payload.point_a = a; 
-                payload.point_b = b; 
-            } else { 
-                payload.distance_meters = distance_meters.value; 
-            }
-
+            if (a && b) { payload.point_a = a; payload.point_b = b; }
+            else { payload.distance_meters = distance_meters.value; }
 
             try {
                 const res = await fetch('/api/calc', {
@@ -992,12 +993,20 @@
             const a = markerA ? [markerA.getLatLng().lat, markerA.getLatLng().lng] : null;
             const b = markerB ? [markerB.getLatLng().lat, markerB.getLatLng().lng] : null;
 
+            const carname = document.getElementById('carname')?.value?.trim() || null;
+            const carmodel = document.getElementById('carmodel')?.value?.trim() || null;
+            const drVal = document.getElementById('driver_rating')?.value?.trim();
+            const driver_rating = drVal === "" ? null : Number(drVal);
+
             const payload = {
                 start_price: start,
                 bid_price: bid,
                 order_time: order_time.value,
                 tender_time: tender_time.value,
-            };
+                carname: carname,
+                carmodel: carmodel,
+                driver_rating: driver_rating
+                };
             if (a && b) { payload.point_a = a; payload.point_b = b; }
             else { payload.distance_meters = distance_meters.value; }
 
