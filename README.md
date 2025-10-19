@@ -70,19 +70,16 @@ python recommend_three_prices.py
 
 ## Структура репозитория
 drivee-smart-pricing/
-├─ app.py                     # Flask-бэкенд и API:
-│   │                         #  - POST /api/calc: 4 цены (лучшая, 90/60/20%)
-│   │                         #  - POST /api/custom: расчёт P и E для "своей цены"
-│   └─                        #  - GET /: отдаёт интерфейс с картой
-├─ recommend_three_prices.py  # Консольный вариант — расчёт без Flask
-├─ model.joblib               # Обученная ML-модель (scikit-learn, joblib)
-├─ train_model.py             # Скрипт обучения модели (из train.csv)
+├─ app.py                                           
+├─ recommend_three_prices.py  
+├─ model.joblib               
+├─ train_model.py             
 ├─ templates/
-│   └─ index.html             # UI: Leaflet + Bootstrap + модальное окно "Своя цена"
-├─ static/                    # стили, иконки, изображения
-├─ train.csv                  # данные для обучения
-├─ requirements.txt           # зависимости проекта
-└─ README.md                  # этот файл
+│   └─ index.html             
+├─ static/                    
+├─ train.csv                  
+├─ requirements.txt           
+└─ README.md                  
 
 Что внутри UI (index.html):
 - Интерактивная карта (OSM/Leaflet): ставьте A и B кликом/перетаскиванием, вводите адрес вручную (геокодинг Nominatim).
