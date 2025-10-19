@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="ru">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Рекомендованные цены — маршрут на карте</title>
+
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <!-- Bootstrap -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        body {
+            padding: 20px;
+        }
+
+        #map {
+            height: 460px;
+            border-radius: 14px;
+        }
+
+        .card {
+            border-radius: 14px;
+        }
+
+        .btn {
+            border-radius: 10px;
+        }
+
+        .muted {
+            color: #6c757d;
+            font-size: .9rem;
+        }
+
+        .input-group .btn {
+            border-radius: 0 10px 10px 0;
+        }
+
+        .marker-btn .btn {
+            border-radius: 999px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container" style="max-width:1100px;">
+        <h1 class="mb-3">Рекомендованные цены (маршрут от A до B)</h1>
+        <p class="muted mb-3">
+            Точка A по умолчанию — <strong>Нижневартовск, Ленина 7</strong>.
+            Можно менять обе точки: перетаскивать маркеры или ставить их кликом (выберите режим). Адреса
+            синхронизируются с формой.
+        </p>
+
+        <div id="map" class="mb-3 shadow-sm"></div>
+
+        <div class="d-flex align-items-center gap-2 marker-btn mb-3">
+            <span class="muted">Клик по карте меняет точку:</span>
+            <div class="btn-group" role="group">
+                <input type="radio" class="btn-check" name="clickMode" id="modeA" autocomplete="off" checked>
+                <label class="btn btn-outline-primary" for="modeA">A</label>
+                <input type="radio" class="btn-check" name="clickMode" id="modeB" autocomplete="off">
+                <label class="btn btn-outline-danger" for="modeB">B</label>
+            </div>
+        </div>
+
+        <div class="card shadow-sm mb-3">
+            <div class="card-body">
+                <form id="calc-form" class="row gy-3">
+                    <!-- Адреса -->
+                    <div class="col-md-6">
+                        <label class="form-label">Точка A</label>
+                        <div class="input-group">
+                            <input id="pointA" type="text" class="form-control" value="Нижневартовск, Ленина 7">
+                            <button class="btn btn-outline-primary" type="button" id="geoA"
+                                title="Найти адрес A">🔍</button>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Точка B</label>
+                        <div class="input-group">
+                            <input id="pointB" type="text" class="form-control"
+                                placeholder="кликните по карте или введите адрес">
+                            <button class="btn btn-outline-danger" type="button" id="geoB"
+                                title="Найти адрес B">🔍</button>
+                        </div>
+                    </div>
+
+                    <hr class="mt-2">
+
+                    <!-- Параметры -->
+                    <div class="col-6 col-md-3">
+                        <label class="form-label">Цена клиента, ₽</label>
+                        <input id="start_price" type="number" min="1" class="form-control" placeholder="300" required>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <label class="form-label">Время заказа (HH:MM)</label>
+                        <input id="order_time" type="time" class="form-control" required>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <label class="form-label">Время бида (опц.)</label>
+                        <input id="tender_time" type="time" class="form-control">
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <label class="form-label">Дистанция, м (если без карты)</label>
+                        <input id="distance_meters" type="number" min="0" class="form-control" placeholder="12000">
+                    </div>
+
+                    <div class="col-12 d-flex gap-2 flex-wrap">
+                        <button class="btn btn-primary" type="submit">Рассчитать</button>
+                        <button id="own-price-btn" class="btn btn-outline-primary" type="button" data-bs-toggle="modal"
+                            data-bs-target="#ownPriceModal">Своя цена</button>
+                        <button id="clear-btn" class="btn btn-outline-secondary" type="button">Очистить</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="alert" class="alert alert-danger d-none"></div>
+
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <div id="distance-info" class="muted d-none mb-2"></div>
+                <div class="table-responsive">
+                    <table class="table align-middle">
+                        <thead>
+                            <tr>
+                                <th>Вариант</th>
+                                <th class="text-end">Цена ₽</th>
+                                <th class="text-end">P(accept), %</th>
+                                <th class="text-end">E[доход] ₽</th>
+                            </tr>
+                        </thead>
+                        <tbody id="result-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== МОДАЛКА "Своя цена" ===== -->
+    <div class="modal fade" id="ownPriceModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content" style="border-radius:16px;">
+                <div class="modal-header">
+                    <h5 class="modal-title">Рассчитать свою цену</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="form-label">Ваша цена, ₽ (≥ цены клиента)</label>
+                    <input id="own_price_input" type="number" min="1" class="form-control" placeholder="например, 350">
+                    <div class="form-text">Нажмите Enter для расчёта</div>
+                    <div id="own_price_error" class="text-danger mt-2 d-none"></div>
+
+                    <hr>
+                    <div id="own_price_result" class="d-none">
+                        <div class="d-flex justify-content-between">
+                            <div>P(accept):</div>
+                            <div id="own_p" class="fw-semibold"></div>
+                        </div>
+                        <div class="d-flex justify-content-between">
+                            <div>Ожидаемый доход:</div>
+                            <div id="own_e" class="fw-semibold"></div>
+                        </div>
+                        <div class="mt-2 text-muted" style="font-size:.9rem;">Цена округляется до ближайших 5 ₽ перед
+                            расчётом.</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <!-- Кнопка оставлена как запасной вариант -->
+                    <button id="own_calc_btn" type="button" class="btn btn-primary">Рассчитать</button>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Закрыть</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ====== Leaflet карта ======
+        const map = L.map('map').setView([60.9397, 76.5696], 13); // Нижневартовск
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19, attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        const iconA = L.divIcon({ html: '<div style="background:#0d6efd;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:2px solid #fff;">A</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
+        const iconB = L.divIcon({ html: '<div style="background:#dc3545;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:2px solid #fff;">B</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
+
+        let markerA = null, markerB = null, routeLine = null;
+
+        const modeA = document.getElementById('modeA');
+        const modeB = document.getElementById('modeB');
+
+        // ====== Геокод/реверс-геокод ======
+        async function geocode(address) {
+            const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('Ошибка геокодирования');
+            const d = await r.json();
+            if (!Array.isArray(d) || !d.length) throw new Error('Адрес не найден');
+            return { lat: parseFloat(d[0].lat), lon: parseFloat(d[0].lon), display: d[0].display_name };
+        }
+        async function reverseGeocode(lat, lon) {
+            const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`;
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('Ошибка reverse geocode');
+            const d = await r.json();
+            return d && d.display_name ? d.display_name : `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+        }
+
+        // ====== Маркеры + синхронизация адресов ======
+        function setMarkerA(latlng, updateAddress = true) {
+            if (!markerA) {
+                markerA = L.marker(latlng, { draggable: true, icon: iconA }).addTo(map).bindPopup('A');
+                markerA.on('dragend', async () => {
+                    const ll = markerA.getLatLng();
+                    try {
+                        const addr = await reverseGeocode(ll.lat, ll.lng);
+                        document.getElementById('pointA').value = addr;
+                    } catch { }
+                });
+            } else {
+                markerA.setLatLng(latlng);
+            }
+            if (updateAddress) reverseGeocode(latlng.lat, latlng.lng).then(a => pointA.value = a).catch(() => { });
+        }
+        function setMarkerB(latlng, updateAddress = true) {
+            if (!markerB) {
+                markerB = L.marker(latlng, { draggable: true, icon: iconB }).addTo(map).bindPopup('B');
+                markerB.on('dragend', async () => {
+                    const ll = markerB.getLatLng();
+                    try {
+                        const addr = await reverseGeocode(ll.lat, ll.lng);
+                        document.getElementById('pointB').value = addr;
+                    } catch { }
+                });
+            } else {
+                markerB.setLatLng(latlng);
+            }
+            if (updateAddress) reverseGeocode(latlng.lat, latlng.lng).then(a => pointB.value = a).catch(() => { });
+        }
+
+        // клик по карте — по выбранному режиму
+        map.on('click', e => {
+            if (modeB.checked) setMarkerB(e.latlng, true);
+            else setMarkerA(e.latlng, true);
+        });
+
+        // автоподстановка A
+        async function initPointA() {
+            try {
+                const res = await geocode('Нижневартовск, Ленина 7');
+                setMarkerA(L.latLng(res.lat, res.lon), false);
+                pointA.value = res.display;
+                map.setView([res.lat, res.lon], 14);
+            } catch { }
+        }
+        document.addEventListener('DOMContentLoaded', initPointA);
+
+        // кнопки 🔍
+        geoA.addEventListener('click', async () => {
+            const q = pointA.value.trim(); if (!q) return;
+            try {
+                const res = await geocode(q);
+                setMarkerA(L.latLng(res.lat, res.lon), false);
+                pointA.value = res.display;
+                map.setView([res.lat, res.lon], 14);
+            } catch { alert('Адрес A не найден'); }
+        });
+        geoB.addEventListener('click', async () => {
+            const q = pointB.value.trim(); if (!q) return;
+            try {
+                const res = await geocode(q);
+                setMarkerB(L.latLng(res.lat, res.lon), false);
+                pointB.value = res.display;
+                map.setView([res.lat, res.lon], 14);
+            } catch { alert('Адрес B не найден'); }
+        });
+
+        // Линия маршрута
+        function drawRoute(latlngs) {
+            if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+            routeLine = L.polyline(latlngs, { weight: 6, opacity: 0.9 }).addTo(map);
+            map.fitBounds(routeLine.getBounds(), { padding: [24, 24] });
+        }
+        function clearMapStuff() {
+            if (markerA) { map.removeLayer(markerA); markerA = null; }
+            if (markerB) { map.removeLayer(markerB); markerB = null; }
+            if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+        }
+
+        // ====== Общие элементы формы/уведомления ======
+        const form = document.getElementById('calc-form');
+        const tbody = document.getElementById('result-tbody');
+        const alertBox = document.getElementById('alert');
+        const clearBtn = document.getElementById('clear-btn');
+        const distanceInfo = document.getElementById('distance-info');
+
+        function showError(m) { alertBox.textContent = m || 'Ошибка'; alertBox.classList.remove('d-none'); }
+        function hideError() { alertBox.classList.add('d-none'); }
+        function showDistance(m) { distanceInfo.textContent = 'Дистанция: ' + Number(m).toLocaleString('ru-RU') + ' м'; distanceInfo.classList.remove('d-none'); }
+        function hideDistance() { distanceInfo.classList.add('d-none'); distanceInfo.textContent = ''; }
+        function renderRows(rows) {
+            tbody.innerHTML = '';
+            (rows || []).forEach(r => {
+                tbody.insertAdjacentHTML('beforeend',
+                    `<tr>
+         <td>${r.label}</td>
+         <td class="text-end">${r.price}</td>
+         <td class="text-end">${(r.p * 100).toFixed(1)}%</td>
+         <td class="text-end">${r.e.toFixed(1)}</td>
+       </tr>`);
+            });
+        }
+
+        // основной расчёт (4 цены)
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault(); hideError(); hideDistance();
+
+            const a = markerA ? [markerA.getLatLng().lat, markerA.getLatLng().lng] : null;
+            const b = markerB ? [markerB.getLatLng().lat, markerB.getLatLng().lng] : null;
+
+            const payload = {
+                start_price: Number(start_price.value),
+                order_time: order_time.value,
+                tender_time: tender_time.value,
+            };
+
+            if (a && b) { payload.point_a = a; payload.point_b = b; }
+            else { payload.distance_meters = distance_meters.value; }
+
+            try {
+                const res = await fetch('/api/calc', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) { showError(data.error || 'Ошибка'); tbody.innerHTML = ''; return; }
+                renderRows(data.rows);
+                if (data.distance_meters !== undefined) showDistance(data.distance_meters);
+                if (data.route && Array.isArray(data.route) && data.route.length > 1) drawRoute(data.route);
+            } catch (err) {
+                showError('Сетевая ошибка: ' + err.message);
+            }
+        });
+
+        // ====== Модалка "Своя цена" ======
+        const ownModalEl = document.getElementById('ownPriceModal');
+        const ownError = document.getElementById('own_price_error');
+        const ownResult = document.getElementById('own_price_result');
+        const ownP = document.getElementById('own_p');
+        const ownE = document.getElementById('own_e');
+        const ownInput = document.getElementById('own_price_input');
+        const ownBtn = document.getElementById('own_calc_btn');
+
+        function showOwnError(msg) { ownError.textContent = msg; ownError.classList.remove('d-none'); ownResult.classList.add('d-none'); }
+        function showOwnResult(p, e) {
+            ownError.classList.add('d-none');
+            ownResult.classList.remove('d-none');
+            ownP.textContent = (Number(p) * 100).toFixed(1) + '%';
+            ownE.textContent = Number(e).toFixed(1) + ' ₽';
+        }
+
+
+        async function computeOwnPrice() {  // <-- общая функция расчёта своей цены
+            const bid = Number(ownInput.value);
+            const start = Number(start_price.value);
+            if (!bid || bid <= 0) { showOwnError('Введите вашу цену'); return; }
+            if (!start || start <= 0) { showOwnError('В форме должна быть задана цена клиента'); return; }
+            if (bid < start) { showOwnError('Ваша цена должна быть ≥ цены клиента'); return; }
+
+            const a = markerA ? [markerA.getLatLng().lat, markerA.getLatLng().lng] : null;
+            const b = markerB ? [markerB.getLatLng().lat, markerB.getLatLng().lng] : null;
+
+            const payload = {
+                start_price: start,
+                bid_price: bid,
+                order_time: order_time.value,
+                tender_time: tender_time.value,
+            };
+            if (a && b) { payload.point_a = a; payload.point_b = b; }
+            else { payload.distance_meters = distance_meters.value; }
+
+            try {
+                const res = await fetch('/api/custom', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) { showOwnError(data.error || 'Ошибка'); return; }
+                showOwnResult(data.p, data.e);
+            } catch (err) {
+                showOwnError('Сетевая ошибка: ' + err.message);
+            }
+        }
+
+        ownBtn.addEventListener('click', computeOwnPrice); // остаётся как запасной триггер
+
+        // ENTER: фокус на поле при открытии и автозапуск по Enter
+        ownModalEl.addEventListener('shown.bs.modal', () => { ownInput.focus(); });
+        ownInput.addEventListener('keydown', (e) => {            // <-- вот это запускает расчёт по Enter
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                computeOwnPrice();
+            }
+        });
+
+        // Очистить
+        clearBtn.addEventListener('click', () => {
+            hideError(); hideDistance(); form.reset(); tbody.innerHTML = '';
+            clearMapStuff();
+            // вернуть A в исходное положение
+            (async () => {
+                try {
+                    const res = await geocode('Нижневартовск, Ленина 7');
+                    setMarkerA(L.latLng(res.lat, res.lon), false);
+                    pointA.value = res.display;
+                    map.setView([res.lat, res.lon], 14);
+                } catch { }
+            })();
+            modeA.checked = true;
+        });
+    </script>
+</body>
+
+</html>
