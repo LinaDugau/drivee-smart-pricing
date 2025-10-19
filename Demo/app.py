@@ -32,34 +32,18 @@ def parse_hhmm_to_dt(s: str) -> datetime:
 def round_price_5(x: float) -> int:
     return int(round(x/5)*5)
 
-def make_row(start, bid, order_dt, tender_dt, distance_m):
+def make_row(start, bid, order_dt, tender_dt, distance_m, carname=None, carmodel=None, platform=None):
     order_hour  = int(order_dt.hour)
     tender_hour = int(tender_dt.hour)
-    order_dow   = 0
-    tender_dow  = 0
-    delay_min   = max(0.0, (tender_dt - order_dt).total_seconds() / 60.0)
+    order_dow = tender_dow = 0  # если нет даты — фиксируем 0
+    delay_min = max(0.0, (tender_dt - order_dt).total_seconds() / 60.0)
     ang = 2 * math.pi / 24.0
 
     distance_m = float(distance_m)
     log_distance_m = math.log(distance_m if distance_m > 1.0 else 1.0)
     log_price_start = math.log(start if start > 1.0 else 1.0)
-    defaults_num = {
-        "duration_in_seconds": np.nan,
-        "avg_speed_kmh": np.nan,
-        "pickup_in_meters": np.nan,
-        "pickup_in_seconds": np.nan,
-        "pickup_speed_kmh": np.nan,
-        "driver_rating": np.nan,
-        "driver_experience_days": np.nan,
-    }
 
-    defaults_cat = {
-        "platform": "unknown",
-        "carmodel": "unknown",
-        "carname": "unknown",
-    }
-
-    base_feats = {
+    base = {
         "price_start_local": float(start),
         "log_price_start": log_price_start,
         "order_hour": order_hour,
@@ -73,19 +57,27 @@ def make_row(start, bid, order_dt, tender_dt, distance_m):
         "bid_delay_min": float(delay_min),
         "distance_in_meters": distance_m,
         "log_distance_m": log_distance_m,
+        # опциональные числовые — по умолчанию NaN
+        "duration_in_seconds": np.nan,
+        "avg_speed_kmh": np.nan,
+        "pickup_in_meters": np.nan,
+        "pickup_in_seconds": np.nan,
+        "pickup_speed_kmh": np.nan,
+        "driver_rating": np.nan,
+        "driver_experience_days": np.nan,
     }
+
+    # Категориальные — если модель их ждёт
+    if "carname" in FEATURE_COLS:
+        base["carname"] = (carname or "unknown")
+    if "carmodel" in FEATURE_COLS:
+        base["carmodel"] = (carmodel or "unknown")
+    if "platform" in FEATURE_COLS:
+        base["platform"] = (platform or "unknown")
 
     row = {}
     for col in FEATURE_COLS:
-        if col in base_feats:
-            row[col] = base_feats[col]
-        elif col in defaults_num:
-            row[col] = defaults_num[col]
-        elif col in defaults_cat:
-            row[col] = defaults_cat[col]
-        else:
-            row[col] = np.nan
-
+        row[col] = base.get(col, np.nan if col not in ("carname","carmodel","platform") else "unknown")
     return pd.DataFrame([row], columns=FEATURE_COLS)
 
 def load_model():
@@ -94,9 +86,7 @@ def load_model():
     if MODEL is None:
         if not os.path.exists(MODEL_PATH):
             raise FileNotFoundError(f"{MODEL_PATH} не найден. Сначала обучите модель.")
-
         obj = joblib.load(MODEL_PATH)
-
         if isinstance(obj, dict):
             MODEL = obj.get("pipeline", obj)
             FEATURE_COLS = obj.get("feature_cols", [])
@@ -105,34 +95,30 @@ def load_model():
             MODEL = obj
             FEATURE_COLS = []
             CATEGORICAL_FEATURES = []
-
         print(f"[INFO] Модель загружена: {MODEL_PATH}")
-        print(f"[INFO] Признаков: {len(FEATURE_COLS)}  | Категориальных: {len(CATEGORICAL_FEATURES)}")
+        print(f"[INFO] Признаков: {len(FEATURE_COLS)} | Категориальных: {len(CATEGORICAL_FEATURES)}")
     return MODEL
 
-def predict_prob(pipe, start, bid, order_dt, tender_dt, distance_m) -> float:
-    X = make_row(start, bid, order_dt, tender_dt, distance_m)
+def predict_prob(pipe, start, bid, order_dt, tender_dt, distance_m, carname=None, carmodel=None, platform=None) -> float:
+    X = make_row(start, bid, order_dt, tender_dt, distance_m, carname, carmodel, platform)
     if hasattr(pipe, "predict_proba"):
         return float(pipe.predict_proba(X)[:, 1][0])
-
-    X_typ = make_row(start, bid, order_dt, tender_dt, distance_m)
-    pred_bid = float(pipe.predict(X_typ)[0])
-
-    m = bid / max(pred_bid, 1e-6)
-
-    k = 8.0
+    pred_bid = float(pipe.predict(X)[0])  
+    m = bid / max(pred_bid, 1e-6)         
+    k = 8.0                               
     p = 1.0 / (1.0 + math.exp(k * (m - 1.0)))
+    return float(min(0.995, max(0.005, p)))
 
-    p = min(0.995, max(0.005, p))
-    return float(p)
-
-def build_curve(pipe, start, order_dt, tender_dt, distance_m):
+def build_curve(pipe, start, order_dt, tender_dt, distance_m, carname=None, carmodel=None, platform=None):
     p_min = int(round(start))
-    p_max = int(round(start*(1.0+UP_PCT)))
-    grid = np.arange(p_min, max(p_min,p_max)+1, 1, dtype=int)
-    probs = [predict_prob(pipe, start, z, order_dt, tender_dt, distance_m) for z in grid]
-    df = pd.DataFrame({"price":grid, "p":probs})
-    df["e"] = df["price"]*df["p"]
+    p_max = int(round(start * (1.0 + UP_PCT)))
+    grid = np.arange(p_min, max(p_min, p_max) + 1, 1, dtype=int)
+    probs = [
+        predict_prob(pipe, start, z, order_dt, tender_dt, distance_m, carname, carmodel, platform)
+        for z in grid
+    ]
+    df = pd.DataFrame({"price": grid, "p": probs})
+    df["e"] = df["price"] * df["p"]
     return df
 
 def pick_right(curve, idx_base, target_prob):
@@ -179,6 +165,10 @@ def index():
 def api_calc():
     try:
         payload = request.get_json(force=True)
+        carname = (payload.get("carname") or "").strip() or None
+        carmodel = (payload.get("carmodel") or "").strip() or None
+        platform = (payload.get("platform") or "").strip() or None
+
         start = float(payload.get("start_price", 0))
         if start <= 0:
             return jsonify(error="Стартовая цена должна быть > 0"), 400
@@ -186,6 +176,9 @@ def api_calc():
         order_dt = parse_hhmm_to_dt(payload.get("order_time",""))
         tender_s = (payload.get("tender_time") or "").strip()
         tender_dt = parse_hhmm_to_dt(tender_s) if tender_s else order_dt
+        carname = (payload.get("carname") or "").strip() or None
+        carmodel = (payload.get("carmodel") or "").strip() or None
+        platform = (payload.get("platform") or "").strip() or None
 
         point_a = payload.get("point_a")
         point_b = payload.get("point_b")
@@ -204,7 +197,7 @@ def api_calc():
 
         pipe = load_model()
 
-        curve = build_curve(pipe, start, order_dt, tender_dt, dist_m)
+        curve = build_curve(pipe, start, order_dt, tender_dt, dist_m, carname, carmodel, platform)
         idx_opt = int(curve["e"].idxmax())
         best = curve.loc[idx_opt]
         p_opt_raw = float(best["p"])
@@ -216,9 +209,9 @@ def api_calc():
 
         def pack(row, label):
             price = round_price_5(float(row["price"]))
-            p = predict_prob(pipe, start, price, order_dt, tender_dt, dist_m)
+            p = predict_prob(pipe, start, price, order_dt, tender_dt, dist_m, carname, carmodel, platform)
             e = price * p
-            return {"label": label, "price": int(price), "p": round(p,3), "e": round(e,1)}
+            return {"label": label, "price": int(price), "p": round(p, 3), "e": round(e, 1)}
 
         out = {
             "rows": [
@@ -244,6 +237,10 @@ def api_calc():
 def api_custom():
     try:
         payload = request.get_json(force=True)
+        carname = (payload.get("carname") or "").strip() or None
+        carmodel = (payload.get("carmodel") or "").strip() or None
+        platform = (payload.get("platform") or "").strip() or None
+
         start = float(payload.get("start_price", 0))
         bid   = float(payload.get("bid_price", 0))
         if start <= 0 or bid <= 0:
@@ -272,7 +269,7 @@ def api_custom():
 
         pipe = load_model()
         price5 = round_price_5(bid)
-        p = predict_prob(pipe, start, price5, order_dt, tender_dt, dist_m)
+        p = predict_prob(pipe, start, price5, order_dt, tender_dt, dist_m, carname, carmodel, platform)
         e = price5 * p
 
         out = {"price": int(price5), "p": round(p,3), "e": round(e,1), "distance_meters": round(dist_m,1)}
