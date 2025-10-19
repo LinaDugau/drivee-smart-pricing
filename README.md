@@ -70,21 +70,24 @@ python recommend_three_prices.py
 >4. 90%-цена: 340 ₽      |  P(accept) = 65.1%  |  E[доход] = 221.4 ₽
 
 ## Структура репозитория
+```
 drivee-smart-pricing/
-├─ demo /
-│   └─ app.py
-│   └─ recommend_three_prices.py 
-│   └─ model.joblib
-│   └─ train_model.py
-│   └─ static/
-│   │    └─ driver.jpg
-│   └─ train.csv
-│   └─ templates/
-│   │    └─ index.html             
-├─ 07-XX.pptx             
-├─ Demo.txt           
-├─ Screencast.txt                           
-└─ README.md                  
+├── demo/
+│   ├── app.py
+│   ├── recommend_three_prices.py 
+│   ├── model.joblib
+│   ├── train_model.py
+│   ├── requirements.txt
+│   ├── train.csv
+│   ├── static/
+│   │   └── driver.jpg
+│   └── templates/
+│       └── index.html             
+├── 07-ХХ.pptx             
+├── Demo.txt           
+├── Screencast.txt                           
+└── README.md
+```                  
 
 Что внутри UI (index.html):
 - Интерактивная карта (OSM/Leaflet): ставьте A и B кликом/перетаскиванием, вводите адрес вручную (геокодинг Nominatim).
