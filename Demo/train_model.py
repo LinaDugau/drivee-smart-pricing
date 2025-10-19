@@ -1,115 +1,249 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-train_model.py — обучает модель с учётом времени суток и дистанции.
 
-Ожидаемые колонки в train.csv:
-- price_start_local (float/int)
-- price_bid_local   (float/int)
-- is_done           ('done' / 'cancel' или 1/0)
-- order_timestamp   (строка, парсится pandas.to_datetime)
-- tender_timestamp  (строка, парсится pandas.to_datetime)
-- distance_in_meters (float/int) — дистанция маршрута от A до B
+import argparse
+import math
+from datetime import datetime
 
-Сохраняет: model.joblib (dict: {'pipeline': Pipeline, 'feature_cols': [...]})
-"""
-
-import os, sys, numpy as np, pandas as pd, joblib
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+import joblib
+import numpy as np
+import pandas as pd
 from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score, brier_score_loss, log_loss
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+import inspect
 
-CSV_PATH = "train.csv"
-MODEL_PATH = "model.joblib"
 
-def _coerce_is_done(s: pd.Series) -> pd.Series:
-    s = s.astype(str).str.strip().str.lower()
-    mapping = {"done":1, "cancel":0, "canceled":0, "cancelled":0, "1":1, "0":0, "true":1, "false":0}
-    out = s.map(mapping)
-    if out.isna().any():
-        bad = s[out.isna()].unique()[:10]
-        raise ValueError(f"Не удалось распарсить is_done для: {bad}")
-    return out.astype(int)
+MODEL_OUT = "predictions.joblib"
+RANDOM_STATE = 42
 
-def load_data(path: str) -> pd.DataFrame:
-    if not os.path.exists(path):
-        print(f"[ERROR] Нет {path}", file=sys.stderr); sys.exit(1)
+
+def parse_args():
+    ap = argparse.ArgumentParser(description="Train regression model to predict price_bid_local")
+    ap.add_argument("--csv", type=str, default="train.csv", help="Path to CSV (new schema)")
+    ap.add_argument("--model-out", type=str, default=MODEL_OUT, help="Where to save model artifact")
+    return ap.parse_args()
+
+
+def _parse_dt(s):
+    """Безопасное преобразование даты/времени в pandas.Timestamp (без deprecated аргументов)."""
+    return pd.to_datetime(s, errors="coerce", utc=False)
+
+
+def load_and_featurize(path: str) -> pd.DataFrame:
+    """
+    Загружает CSV и строит признаки БЕЗ утечки таргета.
+    Target: price_bid_local
+    """
     df = pd.read_csv(path)
 
-    need = [
-        "price_start_local","price_bid_local","is_done",
-        "order_timestamp","tender_timestamp","distance_in_meters"
+    required = [
+        "order_timestamp", "tender_timestamp",
+        "price_start_local", "price_bid_local",
+        "distance_in_meters"
     ]
-    for c in need:
-        if c not in df.columns:
-            print(f"[ERROR] В train.csv нет колонки {c}", file=sys.stderr); sys.exit(1)
+    for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Нет обязательной колонки: {col}")
 
-    df = df.dropna(subset=need)
-    df = df[(df["price_start_local"]>0)&(df["price_bid_local"]>0)].copy()
-    df["is_done"] = _coerce_is_done(df["is_done"])
+    # Базовая чистка
+    df["price_start_local"] = pd.to_numeric(df["price_start_local"], errors="coerce")
+    df["price_bid_local"]   = pd.to_numeric(df["price_bid_local"], errors="coerce")
+    df["distance_in_meters"]= pd.to_numeric(df["distance_in_meters"], errors="coerce")
 
-    # время
-    df["order_timestamp"]  = pd.to_datetime(df["order_timestamp"],  errors="coerce")
-    df["tender_timestamp"] = pd.to_datetime(df["tender_timestamp"], errors="coerce")
-    df = df.dropna(subset=["order_timestamp","tender_timestamp"])
+    # Время
+    df["order_timestamp"]  = _parse_dt(df["order_timestamp"])
+    df["tender_timestamp"] = _parse_dt(df["tender_timestamp"])
 
-    delay = (df["tender_timestamp"] - df["order_timestamp"]).dt.total_seconds().clip(lower=0)
-    df["bid_delay_min"] = (delay/60.0).astype(float)
+    # Доп. (если есть)
+    for c in ["duration_in_seconds","pickup_in_meters","pickup_in_seconds","driver_rating"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        else:
+            df[c] = np.nan
 
+    if "driver_reg_date" in df.columns:
+        df["driver_reg_date"] = _parse_dt(df["driver_reg_date"])
+    else:
+        df["driver_reg_date"] = pd.NaT
+
+    # Удалим мусор
+    df = df.dropna(subset=["order_timestamp","tender_timestamp","price_start_local","price_bid_local","distance_in_meters"])
+    df = df[(df["price_start_local"]>0)&(df["price_bid_local"]>0)&(df["distance_in_meters"]>=0)].copy()
+
+    # ===== Время
     df["order_hour"]  = df["order_timestamp"].dt.hour
     df["order_dow"]   = df["order_timestamp"].dt.dayofweek
     df["tender_hour"] = df["tender_timestamp"].dt.hour
     df["tender_dow"]  = df["tender_timestamp"].dt.dayofweek
 
-    # циклические часы
-    ang = 2*np.pi/24.0
+    ang = 2*math.pi/24.0
     df["order_hour_sin"]  = np.sin(ang*df["order_hour"])
     df["order_hour_cos"]  = np.cos(ang*df["order_hour"])
     df["tender_hour_sin"] = np.sin(ang*df["tender_hour"])
     df["tender_hour_cos"] = np.cos(ang*df["tender_hour"])
 
-    # ценовые
-    df["bid_ratio"]  = df["price_bid_local"] / df["price_start_local"]
-    df["log_ratio"]  = np.log(df["bid_ratio"].clip(lower=1e-12))
-    df["uplift_rel"] = df["bid_ratio"] - 1.0
-    df["uplift_abs"] = df["price_bid_local"] - df["price_start_local"]
+    # Задержка бида
+    df["bid_delay_min"] = (df["tender_timestamp"] - df["order_timestamp"]).dt.total_seconds()/60.0
+    df["bid_delay_min"] = df["bid_delay_min"].clip(lower=0)
 
-    # дистанция
-    df["distance_in_meters"] = pd.to_numeric(df["distance_in_meters"], errors="coerce")
-    df["distance_in_meters"] = df["distance_in_meters"].fillna(df["distance_in_meters"].median()).clip(lower=0)
-    df["log_distance_m"] = np.log(df["distance_in_meters"].clip(lower=1.0))
+    # ===== Дистанции / скорости
+    df["distance_in_meters"] = df["distance_in_meters"].clip(lower=0)
+    df["log_distance_m"]     = np.log(df["distance_in_meters"].clip(lower=1.0))
+
+    df["duration_in_seconds"] = df["duration_in_seconds"].clip(lower=0)
+    df["avg_speed_kmh"] = np.where(
+        df["duration_in_seconds"]>0,
+        (df["distance_in_meters"]/df["duration_in_seconds"])*3.6,
+        np.nan
+    )
+    df["avg_speed_kmh"] = df["avg_speed_kmh"].clip(lower=0, upper=150)
+
+    df["pickup_in_meters"]  = df["pickup_in_meters"].clip(lower=0)
+    df["pickup_in_seconds"] = df["pickup_in_seconds"].clip(lower=0)
+    df["pickup_speed_kmh"] = np.where(
+        df["pickup_in_seconds"]>0,
+        (df["pickup_in_meters"]/df["pickup_in_seconds"])*3.6,
+        np.nan
+    )
+    df["pickup_speed_kmh"] = df["pickup_speed_kmh"].clip(lower=0, upper=100)
+
+    # Опыт водителя
+    df["driver_experience_days"] = np.where(
+        df["driver_reg_date"].notna(),
+        (df["order_timestamp"] - df["driver_reg_date"]).dt.days,
+        np.nan
+    )
+    df["driver_experience_days"] = df["driver_experience_days"].clip(lower=0)
+
+    # Лог-цены пассажира
+    df["log_price_start"] = np.log(df["price_start_local"].clip(lower=1.0))
+
+    # Категориальные (если нет — подставим)
+    for cat in ["platform","carmodel","carname"]:
+        if cat not in df.columns:
+            df[cat] = "unknown"
+        df[cat] = df[cat].astype("string")
 
     return df
 
-def train_and_save(df: pd.DataFrame):
-    feature_cols = [
-        # price features
-        "price_start_local","price_bid_local","bid_ratio","log_ratio","uplift_rel","uplift_abs",
-        # time features
-        "order_hour","order_dow","tender_hour","tender_dow","bid_delay_min",
+
+def build_pipeline(numeric_features, categorical_features):
+    """Dense-пайплайн: OHE без sparse, чтобы совместимо с HistGBR."""
+    num_transform = StandardScaler(with_mean=True, with_std=True)
+
+    # Универсально под любую версию sklearn:
+    if "sparse_output" in inspect.signature(OneHotEncoder).parameters:
+        cat_transform = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    else:
+        cat_transform = OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+    pre = ColumnTransformer(
+        transformers=[
+            ("num", num_transform, numeric_features),
+            ("cat", cat_transform, categorical_features),
+        ],
+        remainder="drop",
+        # возвращаем DENSE (т.к. и num, и cat — dense)
+        sparse_threshold=1.0,
+    )
+
+    reg = HistGradientBoostingRegressor(
+        max_depth=None,
+        learning_rate=0.08,
+        max_iter=400,
+        l2_regularization=0.0,
+        random_state=RANDOM_STATE,
+    )
+
+    pipe = Pipeline([
+        ("pre", pre),
+        ("reg", reg),
+    ])
+    return pipe
+
+
+def main():
+    args = parse_args()
+    df = load_and_featurize(args.csv)
+
+    # Базовые «желательные» списки
+    numeric_wanted = [
+        "price_start_local","log_price_start",
+        "order_hour","order_dow","tender_hour","tender_dow",
         "order_hour_sin","order_hour_cos","tender_hour_sin","tender_hour_cos",
-        # distance features
-        "distance_in_meters","log_distance_m",
+        "bid_delay_min","distance_in_meters","log_distance_m",
+        "duration_in_seconds","avg_speed_kmh",
+        "pickup_in_meters","pickup_in_seconds","pickup_speed_kmh",
+        "driver_rating","driver_experience_days",
     ]
-    X = df[feature_cols].astype(float)
-    y = df["is_done"].astype(int)
+    categorical_wanted = ["platform","carmodel","carname"]
 
-    X_tr, X_va, y_tr, y_va = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    # Если каких-то колонок нет — создаём безопасные дефолты
+    defaults_num = {
+        "duration_in_seconds": np.nan,
+        "avg_speed_kmh": np.nan,
+        "pickup_in_meters": np.nan,
+        "pickup_in_seconds": np.nan,
+        "pickup_speed_kmh": np.nan,
+        "driver_rating": np.nan,
+        "driver_experience_days": np.nan,
+    }
+    for col, val in defaults_num.items():
+        if col not in df.columns:
+            df[col] = val
 
-    pre = ColumnTransformer([("num", StandardScaler(), X.columns)], remainder="drop")
-    clf = LogisticRegression(max_iter=1000, random_state=42)
-    pipe = Pipeline([("pre", pre), ("clf", clf)])
-    pipe.fit(X_tr, y_tr)
+    for col in categorical_wanted:
+        if col not in df.columns:
+            df[col] = "unknown"
+        df[col] = df[col].astype("string")
 
-    proba = pipe.predict_proba(X_va)[:,1]
-    print(f"[INFO] AUC={roc_auc_score(y_va,proba):.3f}  Brier={brier_score_loss(y_va,proba):.3f}  LogLoss={log_loss(y_va,proba):.3f}")
+    # Берём только те признаки, которые реально присутствуют
+    numeric_features = [c for c in numeric_wanted if c in df.columns]
+    categorical_features = [c for c in categorical_wanted if c in df.columns]
 
-    joblib.dump({"pipeline":pipe, "feature_cols":feature_cols}, MODEL_PATH)
-    print(f"[OK] Сохранено: {MODEL_PATH} (фичей: {len(feature_cols)})")
+    feature_cols = numeric_features + categorical_features
 
-if __name__=="__main__":
-    df = load_data(CSV_PATH)
-    train_and_save(df)
+    feature_cols = numeric_features + categorical_features
+    target = "price_bid_local"
+
+    X_train, X_valid, y_train, y_valid = train_test_split(
+        df[feature_cols], df[target],
+        test_size=0.2, random_state=RANDOM_STATE
+    )
+
+    pipe = build_pipeline(numeric_features, categorical_features)
+    pipe.fit(X_train, y_train)
+
+    pred = pipe.predict(X_valid)
+    r2   = r2_score(y_valid, pred)
+    mae  = mean_absolute_error(y_valid, pred)
+    rmse = math.sqrt(mean_squared_error(y_valid, pred))
+
+    print(f"[VAL] R² = {r2:.3f}   MAE = {mae:.2f} ₽   RMSE = {rmse:.2f} ₽")
+    print(f"[VAL] n_train={len(X_train)}, n_valid={len(X_valid)}")
+
+    meta = {
+        "target": target,
+        "trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "r2": r2, "mae": mae, "rmse": rmse,
+        "csv_used": args.csv,
+        "random_state": RANDOM_STATE,
+        "note": "Dense OHE for HistGBR; RMSE via sqrt(MSE).",
+    }
+    artifact = {
+        "pipeline": pipe,
+        "feature_cols": feature_cols,
+        "numeric_features": numeric_features,
+        "categorical_features": categorical_features,
+        "meta": meta,
+    }
+    joblib.dump(artifact, args.model_out)
+    print(f"[OK] Model saved to {args.model_out}")
+
+
+if __name__ == "__main__":
+    main()

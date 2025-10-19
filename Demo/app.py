@@ -4,8 +4,8 @@ import pandas as pd
 from datetime import datetime, date
 from flask import Flask, render_template, request, jsonify
 
-MODEL_PATH = "model.joblib"
-ORS_API_KEY = os.getenv("ORS_API_KEY", "PASTE_YOUR_ORS_KEY_HERE")
+MODEL_PATH = "predictions.joblib"   
+ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjA4MGQ3YjU4ZDkzNjRjN2U4NjkyODA1YWNlMzZjZjYxIiwiaCI6Im11cm11cjY0In0='
 UP_PCT = 0.60 
 
 FEATURE_COLS = [
@@ -33,52 +33,98 @@ def round_price_5(x: float) -> int:
     return int(round(x/5)*5)
 
 def make_row(start, bid, order_dt, tender_dt, distance_m):
-    order_hour, tender_hour = order_dt.hour, tender_dt.hour
-    order_dow = tender_dow = 0
-    delay_min = max(0.0, (tender_dt - order_dt).total_seconds()/60.0)
-    ang = 2*math.pi/24.0
-
-    bid_ratio  = bid / start
-    log_ratio  = math.log(bid_ratio if bid_ratio > 1e-12 else 1e-12)
-    uplift_rel = bid_ratio - 1.0
-    uplift_abs = bid - start
+    order_hour  = int(order_dt.hour)
+    tender_hour = int(tender_dt.hour)
+    order_dow   = 0
+    tender_dow  = 0
+    delay_min   = max(0.0, (tender_dt - order_dt).total_seconds() / 60.0)
+    ang = 2 * math.pi / 24.0
 
     distance_m = float(distance_m)
     log_distance_m = math.log(distance_m if distance_m > 1.0 else 1.0)
+    log_price_start = math.log(start if start > 1.0 else 1.0)
+    defaults_num = {
+        "duration_in_seconds": np.nan,
+        "avg_speed_kmh": np.nan,
+        "pickup_in_meters": np.nan,
+        "pickup_in_seconds": np.nan,
+        "pickup_speed_kmh": np.nan,
+        "driver_rating": np.nan,
+        "driver_experience_days": np.nan,
+    }
 
-    data = {
-        "price_start_local": start,
-        "price_bid_local": bid,
-        "bid_ratio": bid_ratio,
-        "log_ratio": log_ratio,
-        "uplift_rel": uplift_rel,
-        "uplift_abs": uplift_abs,
+    defaults_cat = {
+        "platform": "unknown",
+        "carmodel": "unknown",
+        "carname": "unknown",
+    }
+
+    base_feats = {
+        "price_start_local": float(start),
+        "log_price_start": log_price_start,
         "order_hour": order_hour,
         "order_dow": order_dow,
         "tender_hour": tender_hour,
         "tender_dow": tender_dow,
-        "bid_delay_min": delay_min,
-        "order_hour_sin": math.sin(ang*order_hour),
-        "order_hour_cos": math.cos(ang*order_hour),
-        "tender_hour_sin": math.sin(ang*tender_hour),
-        "tender_hour_cos": math.cos(ang*tender_hour),
+        "order_hour_sin": math.sin(ang * order_hour),
+        "order_hour_cos": math.cos(ang * order_hour),
+        "tender_hour_sin": math.sin(ang * tender_hour),
+        "tender_hour_cos": math.cos(ang * tender_hour),
+        "bid_delay_min": float(delay_min),
         "distance_in_meters": distance_m,
         "log_distance_m": log_distance_m,
     }
-    return pd.DataFrame([[data[c] for c in FEATURE_COLS]], columns=FEATURE_COLS)
+
+    row = {}
+    for col in FEATURE_COLS:
+        if col in base_feats:
+            row[col] = base_feats[col]
+        elif col in defaults_num:
+            row[col] = defaults_num[col]
+        elif col in defaults_cat:
+            row[col] = defaults_cat[col]
+        else:
+            row[col] = np.nan
+
+    return pd.DataFrame([row], columns=FEATURE_COLS)
 
 def load_model():
-    global MODEL
+    global MODEL, FEATURE_COLS, CATEGORICAL_FEATURES
+
     if MODEL is None:
         if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError("model.joblib не найден. Обучите модель: python train_model.py")
+            raise FileNotFoundError(f"{MODEL_PATH} не найден. Сначала обучите модель.")
+
         obj = joblib.load(MODEL_PATH)
-        MODEL = obj["pipeline"] if isinstance(obj, dict) and "pipeline" in obj else obj
+
+        if isinstance(obj, dict):
+            MODEL = obj.get("pipeline", obj)
+            FEATURE_COLS = obj.get("feature_cols", [])
+            CATEGORICAL_FEATURES = obj.get("categorical_features", [])
+        else:
+            MODEL = obj
+            FEATURE_COLS = []
+            CATEGORICAL_FEATURES = []
+
+        print(f"[INFO] Модель загружена: {MODEL_PATH}")
+        print(f"[INFO] Признаков: {len(FEATURE_COLS)}  | Категориальных: {len(CATEGORICAL_FEATURES)}")
     return MODEL
 
 def predict_prob(pipe, start, bid, order_dt, tender_dt, distance_m) -> float:
     X = make_row(start, bid, order_dt, tender_dt, distance_m)
-    return float(pipe.predict_proba(X)[:,1][0])
+    if hasattr(pipe, "predict_proba"):
+        return float(pipe.predict_proba(X)[:, 1][0])
+
+    X_typ = make_row(start, bid, order_dt, tender_dt, distance_m)
+    pred_bid = float(pipe.predict(X_typ)[0])
+
+    m = bid / max(pred_bid, 1e-6)
+
+    k = 8.0
+    p = 1.0 / (1.0 + math.exp(k * (m - 1.0)))
+
+    p = min(0.995, max(0.005, p))
+    return float(p)
 
 def build_curve(pipe, start, order_dt, tender_dt, distance_m):
     p_min = int(round(start))
@@ -97,10 +143,6 @@ def pick_right(curve, idx_base, target_prob):
     return right.loc[(right["p"]-target_prob).abs().idxmin()]
 
 def ors_distance_and_route(point_a, point_b):
-    """
-    point_* = [lat, lon]
-    Возвращает: (distance_meters, routeLatLng [[lat,lon], ...], error)
-    """
     if not ORS_API_KEY or ORS_API_KEY == "PASTE_YOUR_ORS_KEY_HERE":
         return None, None, "Нет ORS_API_KEY (export/set ORS_API_KEY=...)"
     url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
@@ -111,7 +153,7 @@ def ors_distance_and_route(point_a, point_b):
         if r.status_code == 200:
             data = r.json()
             dist_m = float(data["features"][0]["properties"]["summary"]["distance"])
-            coords = data["features"][0]["geometry"]["coordinates"]  # [lon,lat]
+            coords = data["features"][0]["geometry"]["coordinates"]
             route = [[c[1], c[0]] for c in coords]
             return dist_m, route, None
         else:
@@ -135,15 +177,6 @@ def index():
 
 @app.post("/api/calc")
 def api_calc():
-    """
-    JSON:
-      start_price: number (обязательно)
-      order_time: "HH:MM" (обязательно)
-      tender_time?: "HH:MM"
-      point_a?: [lat, lon]
-      point_b?: [lat, lon]
-      distance_meters?: number  (если точек нет)
-    """
     try:
         payload = request.get_json(force=True)
         start = float(payload.get("start_price", 0))
@@ -209,17 +242,6 @@ def api_calc():
 
 @app.post("/api/custom")
 def api_custom():
-    """
-    JSON:
-      start_price: number
-      bid_price: number   
-      order_time: "HH:MM"
-      tender_time?: "HH:MM"
-      point_a?: [lat, lon]
-      point_b?: [lat, lon]
-      distance_meters?: number (если точек нет)
-    Ответ: { price: округлённая_до_5, p: вероятность, e: ожидание, distance_meters?, route? }
-    """
     try:
         payload = request.get_json(force=True)
         start = float(payload.get("start_price", 0))
