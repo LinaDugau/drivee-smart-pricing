@@ -244,6 +244,32 @@ def main():
     joblib.dump(artifact, args.model_out)
     print(f"[OK] Model saved to {args.model_out}")
 
+     # === Финальный predict на test.csv ===
+    TEST_PATH = "test.csv"
+    OUTPUT_PATH = "XX_predict.csv"  
+
+    try:
+        df_test = load_and_featurize(TEST_PATH)
+
+        # Используем те же признаки, что и при обучении
+        X_test = df_test[feature_cols]
+
+        # Предсказываем целевую переменную
+        y_pred = pipe.predict(X_test)
+
+        # Если нужно сделать предсказание 0/1 (например, принятие/отмена),
+        # округляем к ближайшему целому:
+        y_pred = np.round(y_pred).astype(int)
+
+        # Сохраняем в CSV с одним столбцом is_done
+        pd.DataFrame({"is_done": y_pred}).to_csv(OUTPUT_PATH, index=False, encoding="utf-8")
+        print(f"[OK] Predict saved to {OUTPUT_PATH} (rows={len(y_pred)})")
+
+    except FileNotFoundError:
+        print(f"[WARN] {TEST_PATH} not found, skipping prediction step.")
+    except Exception as e:
+        print(f"[ERROR] Failed to create predict file: {e}")
+
 
 if __name__ == "__main__":
     main()
