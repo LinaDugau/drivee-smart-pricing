@@ -9,36 +9,37 @@
 ## 🚀 Развёртывание (локально)
 
 ### 1) Клонирование и окружение
-```bash
-git clone https://github.com/LinaDugau/drivee-smart-pricing.git
-cd drivee-smart-pricing
 
-python -m venv venv
+>git clone https://github.com/LinaDugau/drivee-smart-pricing.git
+>cd drivee-smart-pricing
+
+>python -m venv venv
 # Windows:
-venv\Scripts\activate
+>venv\Scripts\activate
 # macOS/Linux:
-source venv/bin/activate
+>source venv/bin/activate
 
 ### 2) Зависимости
-pip install -r requirements.txt
+
+>pip install -r requirements.txt 
 
 ### 3) Переменные окружения
 Получите бесплатный ключ OpenRouteService: https://openrouteservice.org/dev/#/signup
 # macOS/Linux:
-export ORS_API_KEY="ВАШ_КЛЮЧ"
+>export ORS_API_KEY="ВАШ_КЛЮЧ"
 
 # Windows (PowerShell):
-setx ORS_API_KEY "ВАШ_КЛЮЧ"
+>setx ORS_API_KEY "ВАШ_КЛЮЧ"
 # или на текущую сессию:
-set ORS_API_KEY=ВАШ_КЛЮЧ
+>set ORS_API_KEY=ВАШ_КЛЮЧ
 
 ### 4) Модель
 Обучите модель на своем train.csv
 или используйте приложенную обученную модель model.joblib в корень проекта
-python train_model.py
+>python train_model.py
 
 ### 5) Запуск
-python app.py
+>python app.py
 # Откройте: http://127.0.0.1:5000
 
 ## 💻 Альтернатива: консольная проверка
