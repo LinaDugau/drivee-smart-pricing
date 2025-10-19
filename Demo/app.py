@@ -5,7 +5,7 @@ from datetime import datetime, date
 from flask import Flask, render_template, request, jsonify
 
 MODEL_PATH = "predictions.joblib"   
-ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjA4MGQ3YjU4ZDkzNjRjN2U4NjkyODA1YWNlMzZjZjYxIiwiaCI6Im11cm11cjY0In0='
+ORS_API_KEY = 'ВАШ_API_KEY'
 UP_PCT = 0.60 
 
 FEATURE_COLS = [
